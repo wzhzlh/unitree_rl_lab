@@ -181,7 +181,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # cleanup deprecated stochastic argument from configs
+    agent_cfg_dict = agent_cfg.to_dict()
+    for model_type in ["actor", "critic"]:
+        if model_type in agent_cfg_dict:
+            for key in ["stochastic", "init_noise_std", "noise_std_type", "state_dependent_std", "obs_normalization"]:
+                agent_cfg_dict[model_type].pop(key, None)
+
+    runner = OnPolicyRunner(env, agent_cfg_dict, log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

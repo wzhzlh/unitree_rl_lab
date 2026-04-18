@@ -4,8 +4,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
-
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoAlgorithmCfg,
+    RslRlMLPModelCfg,
+)
 
 @configclass
 class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -14,13 +17,24 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 500
     experiment_name = ""  # same as task name
     empirical_normalization = False
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+
+    actor = RslRlMLPModelCfg(
+        class_name="MLPModel",
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
+            init_std=1.0,
+        ),
+    )
+    
+    critic = RslRlMLPModelCfg(
+        class_name="MLPModel",
+        hidden_dims=[512, 256, 128],
         activation="elu",
     )
+
     algorithm = RslRlPpoAlgorithmCfg(
+        class_name="PPO",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
