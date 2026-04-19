@@ -715,3 +715,47 @@ for a in UNITREE_G1_29DOF_MIMIC_CFG.actuators.values():
     for n in names:
         if n in e and n in s and s[n]:
             UNITREE_G1_29DOF_MIMIC_ACTION_SCALE[n] = 0.25 * e[n] / s[n]
+
+WHEEL_DOG_CFG = UnitreeArticulationCfg(
+    spawn=UnitreeUrdfFileCfg(
+        asset_path="/home/zhangjiayi/26_AT_wheel_dog/src/dog/model/dog_isaac.urdf",
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.3),
+        joint_pos={
+            ".*_joint1": 0.0,
+           "lf_joint2": 0.7,
+            "rb_joint2": -0.4,
+            "rf_joint2": -0.7,
+            "lb_joint2": 0.4,
+            "lf_joint3": 0.4,
+            "rb_joint3": -0.4,
+            "rf_joint3": -0.4,
+            "lb_joint3": 0.4,
+            ".*_joint4": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    actuators={
+        "WHEEL_DOG": IdealPDActuatorCfg(
+            joint_names_expr=[".*"],
+            effort_limit=25.0,
+            velocity_limit=30.0,
+            stiffness={
+                ".*_joint[1-3]": 50.0,
+                ".*_joint4": 1000.0,
+            },
+            damping={
+                ".*_joint[1-3]": 1.0,
+                ".*_joint4": 100.0,
+            },
+            friction=0.01,
+        ),
+    },
+    joint_sdk_names=[
+        "lf_joint1", "lf_joint2", "lf_joint3", "lf_joint4",
+        "rf_joint1", "rf_joint2", "rf_joint3", "rf_joint4",
+        "lb_joint1", "lb_joint2", "lb_joint3", "lb_joint4",
+        "rb_joint1", "rb_joint2", "rb_joint3", "rb_joint4"
+    ],
+)

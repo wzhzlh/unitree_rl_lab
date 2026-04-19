@@ -1495,6 +1495,351 @@ export MESA_GL_VERSION_OVERRIDE=4.6
 
 ---
 
+## GO2 Mujoco Sim2Sim 部署完全指南
+
+### 完整部署步骤
+
+#### 步骤1: 编译 unitree_sdk2
+
+```bash
+cd /home/zhangjiayi/unitree_sdk2
+mkdir -p build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local
+make -j4
+make install
+```
+
+**预期输出**: 安装到 `~/.local/lib` 和 `~/.local/include`
+
+#### 步骤2: 编译 GO2 控制器
+
+```bash
+cd /home/zhangjiayi/unitree_rl_lab/deploy/robots/go2
+mkdir -p build && cd build
+cmake ..
+make -j4
+```
+
+**成功标志**: 生成 `go2_ctrl` 可执行文件 (8.4MB)
+
+#### 步骤3: 安装 MuJoCo 物理引擎
+
+```bash
+# 创建目录
+mkdir -p ~/.mujoco
+
+# 下载 MuJoCo 3.3.6
+cd ~/.mujoco
+wget https://github.com/google-deepmind/mujoco/releases/download/3.3.6/mujoco-3.3.6-linux-x86_64.tar.gz
+tar -xzf mujoco-3.3.6-linux-x86_64.tar.gz
+
+# 创建符号链接
+cd /home/zhangjiayi/unitree_mujoco/simulate
+ln -s ~/.mujoco/mujoco-3.3.6 mujoco
+```
+
+#### 步骤4: 编译 Mujoco 仿真器
+
+```bash
+cd /home/zhangjiayi/unitree_mujoco/simulate/build
+rm -rf *
+cmake .. -DCMAKE_PREFIX_PATH=$HOME/.local -DCMAKE_BUILD_TYPE=Release
+make -j4
+```
+
+**成功标志**: 生成 `unitree_mujoco` 可执行文件 (4.5MB)
+
+#### 步骤5: 启动 Sim2Sim (两个终端)
+
+**终端1 - 启动Mujoco仿真**:
+```bash
+cd /home/zhangjiayi/unitree_mujoco/simulate/build
+export LD_LIBRARY_PATH=$HOME/.local/lib:/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib:$LD_LIBRARY_PATH
+./unitree_mujoco -r go2 -s scene_terrain.xml
+```
+
+**终端2 - 启动GO2控制器**:
+```bash
+cd /home/zhangjiayi/unitree_rl_lab/deploy/robots/go2/build
+export LD_LIBRARY_PATH=$HOME/.local/lib:/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib:$LD_LIBRARY_PATH
+./go2_ctrl --network lo
+```
+
+#### 步骤6: 操作指令 (在Mujoco窗口中)
+
+1. 按 `[L2 + Up]` → 让机器人站立
+2. 点击Mujoco窗口，按 `8` → 让脚接触地面
+3. 按 `[R1 + X]` → **运行RL策略！**
+4. 按 `9` → 关闭弹性带（可选）
+
+### 常见部署问题 & 解决方案
+
+#### 问题1: CMake找不到 unitree_sdk2
+
+**错误信息**:
+```
+CMake Error at CMakeLists.txt:13 (find_package):
+  Could not find a package configuration file provided by "unitree_sdk2"
+```
+
+**解决方案**:
+```bash
+# 确保SDK已安装到用户目录
+ls ~/.local/lib/cmake/unitree_sdk2Config.cmake
+
+# 如果不存在，重新安装
+cd ~/unitree_sdk2/build
+cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local
+make install
+
+# 重新配置GO2编译
+cd ~/unitree_rl_lab/deploy/robots/go2/build
+rm -rf *
+cmake .. -DCMAKE_PREFIX_PATH=$HOME/.local
+make -j4
+```
+
+#### 问题2: 找不到 onnxruntime.so
+
+**错误信息**:
+```
+/usr/bin/ld: 找不到 -lonnxruntime
+```
+
+**解决方案**: 在CMakeLists.txt中使用完整路径
+
+```cmake
+target_link_libraries(go2_ctrl
+  ${PROJECT_SOURCE_DIR}/../../thirdparty/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0
+)
+```
+
+#### 问题3: Mujoco启动崩溃 - "corrupted size vs. prev_size"
+
+**原因**: glfw库版本冲突（加载了mujoco-210的glfw而不是3.3.6的）
+
+**解决方案**:
+```bash
+# 设置正确的库路径优先级
+export LD_LIBRARY_PATH=$HOME/.local/lib:/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib:$LD_LIBRARY_PATH
+
+# 验证库加载
+ldd /home/zhangjiayi/unitree_mujoco/simulate/build/unitree_mujoco | grep glfw
+# 应该显示来自 mujoco-3.3.6/lib 的libglfw
+```
+
+#### 问题4: DDS 断言失败 - "Assertion failed: (wr->m_iox_pub == NULL)"
+
+**原因**: ROS humble的CycloneDDS与Unitree SDK2的DDS版本不兼容
+
+**解决方案**:
+```bash
+# 优先使用SDK内置的DDS库
+export LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH
+
+# 不使用系统的ROS DDS
+unset RMW_IMPLEMENTATION
+
+# 重新编译Mujoco仿真器
+cd ~/unitree_mujoco/simulate/build
+rm -rf *
+cmake .. -DCMAKE_PREFIX_PATH=$HOME/.local -DCMAKE_BUILD_TYPE=Release
+make -j4
+```
+
+#### 问题5: 控制器无法连接到Mujoco
+
+**症状**: `./go2_ctrl` 启动后没有反应
+
+**排查步骤**:
+```bash
+# 1. 检查Mujoco是否正在运行
+ps aux | grep unitree_mujoco
+
+# 2. 检查网络接口配置
+ip link show lo
+# 应该显示 "lo" (loopback) 接口状态为 UP
+
+# 3. 尝试用具体网卡而不是 lo
+./go2_ctrl --network eth0  # 根据实际网卡修改
+
+# 4. 检查DDS配置
+echo "CYCLONEDDS_URI=file:///tmp/cyclonedds.xml" && printenv | grep CYCLONE
+
+# 5. 增加日志输出
+./go2_ctrl --network lo --log
+```
+
+#### 问题6: 模型文件找不到 (config.yaml)
+
+**症状**: 控制器启动后没有加载RL策略
+
+**解决方案**: 检查并更新 `config/config.yaml`
+
+```yaml
+Velocity:
+  policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
+
+# 应该指向最新的训练模型目录，例如:
+# ../../../logs/rsl_rl/unitree_go2_velocity/2026-04-19_11-23-16/
+```
+
+### 性能优化建议
+
+#### 库路径优化
+
+创建启动脚本 `~/mujoco_env.sh`:
+
+```bash
+#!/bin/bash
+# Mujoco 环境变量配置
+
+export SDK_LIB=$HOME/.local/lib
+export MUJOCO_LIB=/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib
+
+# 优先级: SDK库 → Mujoco库 → 系统库
+export LD_LIBRARY_PATH=$SDK_LIB:$MUJOCO_LIB:$LD_LIBRARY_PATH
+
+# 启用大页面支持 (可选)
+export LD_PRELOAD=$SDK_LIB/libhugetlbfs.so
+
+# 禁用日志 (生产环境)
+export CYBERDDS_SILENCE=1
+
+echo "✅ Mujoco 环境变量已设置"
+echo "   SDK_LIB: $SDK_LIB"
+echo "   MUJOCO_LIB: $MUJOCO_LIB"
+echo "   LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+```
+
+使用方法:
+
+```bash
+source ~/mujoco_env.sh
+./unitree_mujoco -r go2 -s scene_terrain.xml
+```
+
+#### 实时性能检查
+
+在控制器运行时，在另一个终端检查实时性:
+
+```bash
+# 方式1: 查看控制频率
+./go2_ctrl --network lo 2>&1 | grep "Iteration" | head -10
+
+# 方式2: 监控系统资源
+watch -n 0.5 'ps aux | grep -E "unitree_mujoco|go2_ctrl"'
+
+# 方式3: 记录时间戳分析
+(time ./go2_ctrl --network lo) 2>&1 | tail -5
+```
+
+### 部署检查清单
+
+在启动Sim2Sim前，确保以下检查全部通过：
+
+```bash
+#!/bin/bash
+# GO2 部署检查脚本
+
+echo "================================"
+echo "GO2 Mujoco Sim2Sim 部署检查"
+echo "================================"
+echo ""
+
+# 检查1: unitree_sdk2
+echo "[检查1] unitree_sdk2 库..."
+if [ -f ~/.local/lib/libunitree_sdk2.a ]; then
+    echo "  ✅ libunitree_sdk2.a 存在"
+else
+    echo "  ❌ 未找到 libunitree_sdk2.a"
+    exit 1
+fi
+
+# 检查2: DDS 库
+echo "[检查2] DDS 库..."
+if [ -f ~/.local/lib/libddsc.so.0 ] && [ -f ~/.local/lib/libddscxx.so.0 ]; then
+    echo "  ✅ DDS 库存在"
+else
+    echo "  ❌ 缺少 DDS 库"
+    exit 1
+fi
+
+# 检查3: GO2 控制器
+echo "[检查3] GO2 控制器..."
+if [ -f ~/unitree_rl_lab/deploy/robots/go2/build/go2_ctrl ]; then
+    echo "  ✅ go2_ctrl 可执行文件存在"
+else
+    echo "  ❌ 未找到 go2_ctrl"
+    exit 1
+fi
+
+# 检查4: MuJoCo 仿真器
+echo "[检查4] MuJoCo 仿真器..."
+if [ -f ~/unitree_mujoco/simulate/build/unitree_mujoco ]; then
+    echo "  ✅ unitree_mujoco 可执行文件存在"
+else
+    echo "  ❌ 未找到 unitree_mujoco"
+    exit 1
+fi
+
+# 检查5: 符号链接
+echo "[检查5] MuJoCo 符号链接..."
+if [ -L ~/unitree_mujoco/simulate/mujoco ]; then
+    echo "  ✅ mujoco 符号链接正确"
+    echo "      指向: $(readlink ~/unitree_mujoco/simulate/mujoco)"
+else
+    echo "  ❌ mujoco 符号链接不存在"
+    exit 1
+fi
+
+# 检查6: 训练模型
+echo "[检查6] 训练模型..."
+MODEL_DIR=~/unitree_rl_lab/logs/rsl_rl/unitree_go2_velocity
+LATEST_MODEL=$(ls -td $MODEL_DIR/*/ | head -1)
+if [ -d "$LATEST_MODEL" ]; then
+    EPOCH=$(ls "$LATEST_MODEL" model_*.pt 2>/dev/null | wc -l)
+    echo "  ✅ 找到训练模型: $LATEST_MODEL"
+    echo "      共 $EPOCH 个检查点"
+else
+    echo "  ❌ 未找到训练模型"
+    exit 1
+fi
+
+echo ""
+echo "================================"
+echo "✅ 所有检查通过！可以启动Sim2Sim"
+echo "================================"
+echo ""
+echo "启动命令:"
+echo "  终端1: ~/unitree_mujoco/simulate/build/unitree_mujoco -r go2 -s scene_terrain.xml"
+echo "  终端2: ~/unitree_rl_lab/deploy/robots/go2/build/go2_ctrl --network lo"
+```
+
+保存为 `~/check_go2_deploy.sh`:
+
+```bash
+chmod +x ~/check_go2_deploy.sh
+~/check_go2_deploy.sh
+```
+最后！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+一个终端cd /home/zhangjiayi/unitree_mujoco/simulate/build
+
+# 设置库路径 (关键)
+export LD_LIBRARY_PATH=$HOME/.local/lib:/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib:$LD_LIBRARY_PATH
+
+# 启动仿真
+./unitree_mujoco -r go2 -s scene_terrain.xml
+！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+另外一个终端cd /home/zhangjiayi/unitree_rl_lab/deploy/robots/go2/build
+
+# 设置同样的库路径
+export LD_LIBRARY_PATH=$HOME/.local/lib:/home/zhangjiayi/.mujoco/mujoco-3.3.6/lib:$LD_LIBRARY_PATH
+
+# 启动控制器
+./go2_ctrl --network lo
+---
+
 ## 参考链接
 
 - [Isaac Lab 文档](https://isaac-sim.github.io/IsaacLab)
@@ -1502,9 +1847,11 @@ export MESA_GL_VERSION_OVERRIDE=4.6
 - [NVIDIA Omniverse](https://www.nvidia.com/en-us/omniverse/)
 - [Unitree RL Lab](https://github.com/unitreerobotics/unitree_rl_lab)
 - [Unitree SDK2](https://github.com/unitreerobotics/unitree_sdk2)
+- [Unitree Mujoco](https://github.com/unitreerobotics/unitree_mujoco)
 - [ONNX Runtime](https://onnxruntime.ai/docs/)
 - [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads)
 - [Eigen 库](https://eigen.tuxfamily.org/)
+- [MuJoCo 文档](https://mujoco.readthedocs.io/)
 
 ---
 
@@ -1514,11 +1861,18 @@ export MESA_GL_VERSION_OVERRIDE=4.6
 |-----|------|---------|
 | 1.0.0 | 2025-01 | 初始版本 |
 | 1.1.0 | 2025-04 | 支持 Isaac Sim 5.1.0 + Isaac Lab 2.3.0 |
-| 1.2.0 | 2026-04 | 整合环境配置和开发指南，适配 RTX 5060 |
+| 1.2.0 | 2026-04-18 | 整合环境配置和开发指南，适配 RTX 5060 |
+| 1.3.0 | 2026-04-19 | 🎉 **新增GO2 Mujoco Sim2Sim完整部署指南** |
+|       |            | • 补充unitree_sdk2编译步骤 |
+|       |            | • 添加GO2控制器和Mujoco仿真器编译详解 |
+|       |            | • 集成完整问题排查方案（6个常见问题） |
+|       |            | • 提供性能优化建议和库路径配置 |
+|       |            | • 编写部署检查清单脚本 |
 
 ---
 
-*本文档由 Unitree Robotics 维护*
-*当前分支: main*
-*文档更新日期: 2026-04-18*
-*适用于: NVIDIA RTX 5060 Laptop (Blackwell架构)*
+*本文档由 Unitree Robotics 维护*  
+*当前分支: main*  
+*文档更新日期: 2026-04-19*  
+*适用于: NVIDIA RTX 5060 Laptop (Blackwell架构)*  
+*最后修改: GO2 Mujoco Sim2Sim 部署完整指南*
